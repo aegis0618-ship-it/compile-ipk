@@ -96,7 +96,7 @@ jobs:
     - name: 编译插件
       working-directory: openwrt
       run: |
-        make package/plugin/compile V=s
+        make package/openwrt-console/compile V=s
 
     - name: 整理文件
       run: |
