@@ -13,6 +13,11 @@ on:
         required: true
         default: 23.05.5
         type: string
+      plugin_source:
+        description: 插件源码仓库地址；填写 . 使用当前仓库
+        required: true
+        default: .
+        type: string
 
 permissions:
   contents: read
@@ -83,11 +88,25 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: 放置插件源码
+      - name: 获取插件源码
         run: |
           set -euo pipefail
           rm -rf work/openwrt/package/openwrt-console
-          cp -a package/openwrt-console work/openwrt/package/openwrt-console
+          SOURCE='${{ inputs.plugin_source }}'
+          if [ "$SOURCE" = "." ]; then
+            cp -a package/openwrt-console work/openwrt/package/openwrt-console
+          else
+            git clone --depth 1 "$SOURCE" work/plugin-source
+            if [ -f work/plugin-source/Makefile ]; then
+              cp -a work/plugin-source work/openwrt/package/openwrt-console
+            elif [ -f work/plugin-source/package/openwrt-console/Makefile ]; then
+              cp -a work/plugin-source/package/openwrt-console \
+                work/openwrt/package/openwrt-console
+            else
+              echo "源码仓库中找不到 OpenWrt Makefile"
+              exit 1
+            fi
+          fi
           test -f work/openwrt/package/openwrt-console/Makefile
           grep -q '^PKG_NAME:=openwrt-console$' \
             work/openwrt/package/openwrt-console/Makefile
