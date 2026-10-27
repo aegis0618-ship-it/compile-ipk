@@ -55,9 +55,14 @@ jobs:
           BASE="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}/"
 
           INDEX="$(curl -fsSL "$BASE/sha256sums")"
-          SDK_FILE="$(printf '%s\n' "$INDEX" |
-            sed -nE "s/^[0-9a-f]{64}[[:space:]]+\*?(openwrt-sdk-[^[:space:]]+\.tar\.(xz|zst))$/\1/p" |
-            head -n 1)"
+          SDK_FILE="$(printf '%s\n' "$INDEX" | awk '
+            $2 ~ /^\*?openwrt-sdk-[^[:space:]]+\.tar\.(xz|zst)$/ {
+              file = $2
+              sub(/^\*/, "", file)
+              print file
+              exit
+            }
+          ')"
 
           if [ -z "$SDK_FILE" ]; then
             echo "找不到 ${VERSION} ${TARGET} 对应的 SDK"
@@ -66,6 +71,11 @@ jobs:
 
           EXPECTED="$(printf '%s\n' "$INDEX" |
             awk -v f="$SDK_FILE" '$2 == "*"f || $2 == f { print $1; exit }')"
+
+          if [ -z "$EXPECTED" ]; then
+            echo "找不到 SDK 的 SHA256 校验值"
+            exit 1
+          fi
 
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           echo "file=$SDK_FILE" >> "$GITHUB_OUTPUT"
