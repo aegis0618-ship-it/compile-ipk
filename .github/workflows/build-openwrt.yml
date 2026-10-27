@@ -51,32 +51,34 @@ jobs:
           set -euo pipefail
           TARGET='${{ inputs.target }}'
           VERSION='${{ inputs.firmware_version }}'
-          TARGET_DASH="${TARGET//\//-}"
           BASE="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}/"
 
+          # 获取 sha256sums 文件内容
           INDEX="$(curl -fsSL "$BASE/sha256sums")"
-          SDK_FILE="$(printf '%s\n' "$INDEX" | awk '
+
+          # 使用 Here-String (<<<) 替代管道，防止 Broken pipe
+          # 一次性提取 SDK 文件名和对应的 SHA256 校验值
+          read -r SDK_FILE EXPECTED <<< "$(awk '
             $2 ~ /^\*?openwrt-sdk-[^[:space:]]+\.tar\.(xz|zst)$/ {
               file = $2
               sub(/^\*/, "", file)
-              print file
+              print file, $1
               exit
             }
-          ')"
+          ' <<< "$INDEX")"
 
+          # 检查是否成功获取
           if [ -z "$SDK_FILE" ]; then
-            echo "找不到 ${VERSION} ${TARGET} 对应的 SDK"
+            echo "错误：找不到 ${VERSION} ${TARGET} 对应的 SDK" >&2
             exit 1
           fi
-
-          EXPECTED="$(printf '%s\n' "$INDEX" |
-            awk -v f="$SDK_FILE" '$2 == "*"f || $2 == f { print $1; exit }')"
-
+          
           if [ -z "$EXPECTED" ]; then
-            echo "找不到 SDK 的 SHA256 校验值"
+            echo "错误：找不到 SDK 的 SHA256 校验值" >&2
             exit 1
           fi
 
+          # 写入 GitHub Actions Output
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           echo "file=$SDK_FILE" >> "$GITHUB_OUTPUT"
           echo "sha256=$EXPECTED" >> "$GITHUB_OUTPUT"
