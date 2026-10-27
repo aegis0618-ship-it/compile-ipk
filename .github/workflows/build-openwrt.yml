@@ -1,119 +1,147 @@
-name: 编译 OpenWrt 插件
+name: 编译 OpenWrt Console 插件
 
 on:
   workflow_dispatch:
     inputs:
       target:
-        description: '目标平台/架构'
+        description: 目标平台，例如 x86/64、rockchip/armv8
         required: true
-        default: 'rockchip/armv8'
+        default: x86/64
+        type: string
       firmware_version:
-        description: '固件版本'
+        description: OpenWrt 版本
         required: true
-        default: '23.05.5'
-      plugin_source:
-        description: '插件源码地址'
-        required: true
-        default: 'https://github.com/qianlyun123/luci-app-modem.git'
+        default: 23.05.5
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PACKAGE_NAME: openwrt-console
+  PACKAGE_VERSION: 1.5.0-1
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 90
 
     steps:
-    - name: 检出代码
-      uses: actions/checkout@v2
-      
-    - name: 安装依赖
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk \
-        gettext git java-propose-classpath libelf-dev libncurses5-dev \
-        libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools \
-        unzip wget rsync subversion swig time xsltproc zlib1g-dev tree
+      - name: 检出仓库
+        uses: actions/checkout@v4
 
-    - name: 设置 Python 软链接
-      run: |
-        sudo ln -sf /usr/bin/python3 /usr/bin/python
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ccache file g++ gawk gettext git \
+            libelf-dev libncurses-dev libssl-dev python3 \
+            python3-setuptools unzip wget rsync swig time \
+            xsltproc zlib1g-dev tree
 
-    - name: 设置目标变量
-      id: set_target
-      run: |
-        echo "TARGET_DASH=$(echo ${{ github.event.inputs.target }} | sed 's/\//-/')" >> $GITHUB_OUTPUT
+      - name: 计算 SDK 地址
+        id: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET='${{ inputs.target }}'
+          VERSION='${{ inputs.firmware_version }}'
+          TARGET_DASH="${TARGET//\//-}"
+          BASE="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}/"
 
-    - name: 下载并解压 OpenWrt 源码
-      run: |
-        SDK_BASE_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.firmware_version }}/targets/${{ github.event.inputs.target }}/"
-        SDK_FILE=$(curl -s $SDK_BASE_URL | grep -oP 'openwrt-sdk-.*?-${{ steps.set_target.outputs.TARGET_DASH }}_gcc-.*?Linux-x86_64.tar.xz' | head -n 1)
-        if [ -z "$SDK_FILE" ]; then
-          echo "无法找到匹配的 SDK 文件"
-          exit 1
-        fi
-        SDK_URL="${SDK_BASE_URL}${SDK_FILE}"
-        echo "下载 SDK: $SDK_URL"
-        wget $SDK_URL -O openwrt.tar.xz
-        mkdir openwrt
-        tar -xJf openwrt.tar.xz -C openwrt --strip-components 1
+          INDEX="$(curl -fsSL "$BASE/sha256sums")"
+          SDK_FILE="$(printf '%s\n' "$INDEX" |
+            sed -nE "s/^[0-9a-f]{64}[[:space:]]+\*?(openwrt-sdk-[^[:space:]]+\.tar\.(xz|zst))$/\1/p" |
+            head -n 1)"
 
-    - name: 检查 SDK 下载
-      run: |
-        if [ ! -f openwrt.tar.xz ]; then
-          echo "SDK 下载失败"
-          exit 1
-        fi
+          if [ -z "$SDK_FILE" ]; then
+            echo "找不到 ${VERSION} ${TARGET} 对应的 SDK"
+            exit 1
+          fi
 
-    - name: 克隆插件源码
-      working-directory: openwrt/package
-      run: |
-        git clone ${{ github.event.inputs.plugin_source }} plugin
-        cd plugin
+          EXPECTED="$(printf '%s\n' "$INDEX" |
+            awk -v f="$SDK_FILE" '$2 == "*"f || $2 == f { print $1; exit }')"
 
-        chmod +x $GITHUB_WORKSPACE/.github/scripts/get_plugin_info.sh
-        $GITHUB_WORKSPACE/.github/scripts/get_plugin_info.sh
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "file=$SDK_FILE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$EXPECTED" >> "$GITHUB_OUTPUT"
+          echo "SDK: $BASE$SDK_FILE"
 
-    - name: 更新 feeds
-      working-directory: openwrt
-      run: |
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
+      - name: 下载并验证 SDK
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          wget -q "${{ steps.sdk.outputs.base }}${{ steps.sdk.outputs.file }}" \
+            -O work/openwrt-sdk.tar
+          echo "${{ steps.sdk.outputs.sha256 }}  work/openwrt-sdk.tar" | sha256sum -c -
+          mkdir -p work/openwrt
+          tar -xf work/openwrt-sdk.tar -C work/openwrt --strip-components=1
 
-    - name: 检查工作目录
-      working-directory: openwrt
-      run: |
-        pwd
-        ls -la
+      - name: 安装 feeds
+        working-directory: work/openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-    - name: 配置 OpenWrt
-      working-directory: openwrt
-      run: |
-        # TARGET=$(echo "${{ github.event.inputs.target }}" | sed 's/\//\\\//g')
-        # echo "CONFIG_TARGET_${TARGET%/*}=y" > .config
-        # echo "CONFIG_TARGET_${TARGET%/*}_${TARGET#*/}=y" >> .config
-        
-        echo "CONFIG_PACKAGE_plugin=m" >> .config
-        make defconfig
+      - name: 放置插件源码
+        run: |
+          set -euo pipefail
+          rm -rf work/openwrt/package/openwrt-console
+          cp -a package/openwrt-console work/openwrt/package/openwrt-console
+          test -f work/openwrt/package/openwrt-console/Makefile
+          grep -q '^PKG_NAME:=openwrt-console$' \
+            work/openwrt/package/openwrt-console/Makefile
 
-    - name: 编译插件
-      working-directory: openwrt
-      run: |
-        make package/openwrt-console/compile V=s
+      - name: 配置并编译插件
+        working-directory: work/openwrt
+        run: |
+          echo 'CONFIG_PACKAGE_openwrt-console=m' >> .config
+          make defconfig
+          make package/openwrt-console/compile V=s
 
-    - name: 整理文件
-      run: |
-        mkdir -p firmware
-        find openwrt/bin/packages/ -name "${{ env.PLUGIN_NAME }}*.ipk" | xargs -I {} mv {} firmware/
-        cd firmware
-        for file in *.ipk; do
-          mv "$file" "${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}-${{ env.PLUGIN_NAME }}-${{ env.PLUGIN_VERSION }}.ipk"
-        done
-        echo "生成的文件列表:"
-        ls -l
+      - name: 严格检查并整理 IPK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
 
-    - name: Upload Packages
-      uses: actions/upload-artifact@v4
-      with:
-        name: openwrt-ipk-packages
-        path: |
-          firmware/*
-          bin/packages/*/*/*.ipk
-          bin/packages/*/*.apk
+          mapfile -t PACKAGES < <(
+            find work/openwrt/bin -type f \
+              -name 'openwrt-console_*.ipk' -print
+          )
+
+          if [ "${#PACKAGES[@]}" -ne 1 ]; then
+            echo "错误：应该只找到 1 个 openwrt-console IPK，实际找到 ${#PACKAGES[@]} 个："
+            printf '%s\n' "${PACKAGES[@]}"
+            echo "目录中相关包："
+            find work/openwrt/bin -type f -name '*.ipk' -print | sort
+            exit 1
+          fi
+
+          PACKAGE="${PACKAGES[0]}"
+          CONTROL="$(mktemp -d)"
+          tar -xzf "$PACKAGE" -C "$CONTROL" ./control.tar.gz
+          mkdir "$CONTROL/control"
+          tar -xzf "$CONTROL/control.tar.gz" -C "$CONTROL/control" ./control
+
+          grep -q '^Package: openwrt-console$' "$CONTROL/control/control"
+          grep -q '^Architecture: all$' "$CONTROL/control/control"
+          if grep -Eq '^Depends:.*zlib( |=|$)' "$CONTROL/control/control"; then
+            echo "错误：openwrt-console 不应依赖 zlib"
+            cat "$CONTROL/control/control"
+            exit 1
+          fi
+
+          tar -tzf "$PACKAGE" | grep -q \
+            './data.tar.gz'
+          cp "$PACKAGE" artifacts/openwrt-console_${{ env.PACKAGE_VERSION }}_all.ipk
+          sha256sum artifacts/*.ipk > artifacts/SHA256SUMS
+          cat "$CONTROL/control/control"
+          ls -lh artifacts
+
+      - name: 上传 IPK
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-console-${{ env.PACKAGE_VERSION }}-${{ inputs.target }}
+          path: artifacts/
+          if-no-files-found: error
