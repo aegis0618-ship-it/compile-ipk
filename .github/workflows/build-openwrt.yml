@@ -16,7 +16,7 @@ on:
       plugin_source:
         description: 插件源码仓库地址；填写 . 使用当前仓库
         required: true
-        default: .
+        default: 
         type: string
 
 permissions:
