@@ -53,11 +53,8 @@ jobs:
           VERSION='${{ inputs.firmware_version }}'
           BASE="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}/"
 
-          # 获取 sha256sums 文件内容
           INDEX="$(curl -fsSL "$BASE/sha256sums")"
 
-          # 使用 Here-String (<<<) 替代管道，防止 Broken pipe
-          # 一次性提取 SDK 文件名和对应的 SHA256 校验值
           read -r SDK_FILE EXPECTED <<< "$(awk '
             $2 ~ /^\*?openwrt-sdk-[^[:space:]]+\.tar\.(xz|zst)$/ {
               file = $2
@@ -67,18 +64,19 @@ jobs:
             }
           ' <<< "$INDEX")"
 
-          # 检查是否成功获取
           if [ -z "$SDK_FILE" ]; then
             echo "错误：找不到 ${VERSION} ${TARGET} 对应的 SDK" >&2
             exit 1
           fi
-          
           if [ -z "$EXPECTED" ]; then
             echo "错误：找不到 SDK 的 SHA256 校验值" >&2
             exit 1
           fi
 
-          # 写入 GitHub Actions Output
+          # 生成安全的 TARGET 名称，用于 Artifact 上传
+          SAFE_TARGET="${TARGET//\//-}"
+          echo "SAFE_TARGET=$SAFE_TARGET" >> "$GITHUB_ENV"
+
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           echo "file=$SDK_FILE" >> "$GITHUB_OUTPUT"
           echo "sha256=$EXPECTED" >> "$GITHUB_OUTPUT"
@@ -173,6 +171,6 @@ jobs:
       - name: 上传 IPK
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-console-${{ env.PACKAGE_VERSION }}-${{ inputs.target }}
+          name: openwrt-console-${{ env.PACKAGE_VERSION }}-${{ env.SAFE_TARGET }}
           path: artifacts/
           if-no-files-found: error
